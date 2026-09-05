@@ -6,7 +6,7 @@ Few-shot medical image segmentation (FSMIS) aims to segment unseen anatomical st
 
 ## 💡Motivation
 
-## 🔍Overview of TEAMNet
+## 🔍Overview of DMPNet
 
 ## 🗝️Quick start
 ### 🔖1. Dependencies
