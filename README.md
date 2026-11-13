@@ -50,7 +50,7 @@ scipy==1.16.0
 
 ### 🔥 Training
 1. Compile `./data/supervoxels/felzenszwalb_3d_cy.pyx` with cython (`python ./data/supervoxels/setup.py build_ext --inplace`) and run `./data/supervoxels/generate_supervoxels.py`
-2. Download pre-trained ResNet-50 weights [deeplabv3 version](https://download.pytorch.org/models/deeplabv3_resnet50_coco-cd0a2569.pth) and put your checkpoints folder, then replace the absolute path in the code `./models/encoder.py`.  
+2. Download pre-trained ResNet-101 weights and put your checkpoints folder, then replace the absolute path in the code `./models/encoder.py`.  
 3. Run `./script/train_<direction>.sh`, for example: `./script/train_CHAOST2_setting1.sh`
 
 
