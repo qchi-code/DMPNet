@@ -2,7 +2,8 @@
 import os
 import random
 import logging
-import shutil
+import math
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -42,7 +43,7 @@ def soft_bootstrap_ce(logits, target, beta, ignore_index=255, class_weight=None)
     with torch.no_grad():
         prob = torch.softmax(logits, dim=1)
         onehot = torch.zeros_like(prob)
-        onehot.scatter_(1, t.clamp_min(0).unsqueeze(1), 1.0)
+        onehot.scatter_(1, t.clamp(0, C - 1).unsqueeze(1), 1.0)
         onehot = onehot * valid.unsqueeze(1).float()
         y_soft = (1.0 - float(beta)) * onehot + float(beta) * (prob.detach() * valid.unsqueeze(1).float())
 
@@ -153,7 +154,6 @@ def _strong_augment_intensity(x):
 def main(_run, _config, _log):
     if _run.observers:
         os.makedirs(f'{_run.observers[0].dir}/snapshots', exist_ok=True)
-        shutil.rmtree(f'{_run.observers[0].basedir}/_sources')
 
         file_handler = logging.FileHandler(os.path.join(f'{_run.observers[0].dir}', 'logger.log'))
         file_handler.setLevel('INFO')
@@ -164,17 +164,31 @@ def main(_run, _config, _log):
 
     if _config['seed'] is not None:
         random.seed(_config['seed'])
+        np.random.seed(_config['seed'])
         torch.manual_seed(_config['seed'])
         torch.cuda.manual_seed_all(_config['seed'])
         cudnn.deterministic = False
 
     cudnn.enabled = True
     cudnn.benchmark = True
-    torch.cuda.set_device(device=_config['gpu_id'])
-    torch.set_num_threads(torch.get_num_threads())
+    device = torch.device(f'cuda:{_config["gpu_id"]}' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda':
+        torch.cuda.set_device(device)
 
     _log.info('Create model...')
-    model = FewShotSeg().cuda()
+    model = FewShotSeg(
+        pretrained_weights=_config['pretrained_weights'],
+        use_mb_head=_config['use_mb_head'],
+        sinkhorn_iters=_config['sinkhorn_iters'],
+        sinkhorn_eps=_config['sinkhorn_eps'],
+        rw_iters=_config['rw_iters'],
+        legacy_extra_scales=_config['legacy_extra_scales'],
+        legacy_uot_row_normalize=_config['legacy_uot_row_normalize'],
+    ).to(device)
+    if _config.get('reload_model_path'):
+        checkpoint = torch.load(_config['reload_model_path'], map_location='cpu', weights_only=False)
+        model.load_state_dict(checkpoint.get('model_state_dict', checkpoint), strict=True)
+
     model.train()
 
     _log.info('Set optimizer...')
@@ -189,13 +203,14 @@ def main(_run, _config, _log):
     )
     _log.info(f'LR milestones: {milestones}, gamma: {_config["lr_step_gamma"]}, step_every: {sched_every}')
 
-    my_weight = torch.FloatTensor([0.1, 1.0]).cuda()
+    my_weight = (torch.tensor(_config['class_weights'], dtype=torch.float, device=device)
+                 if _config['class_weights'] is not None else None)
 
-    lambda_prc = float(_config.get("lambda_prc", 0.1))
+    lambda_prc = float(_config['lambda_psr'])
     lambda_dice = float(_config.get("lambda_dice", 1.0))
 
-    boot_beta_max = float(_config.get("boot_beta_max", 0.6))
-    boot_warmup_steps = int(_config.get("boot_warmup_steps", 20000))
+    boot_beta_max = float(_config['bootstrap_max'])
+    boot_warmup_steps = int(_config['bootstrap_warmup'])
 
     grad_clip = float(_config.get("grad_clip", 1.0))
 
@@ -214,6 +229,8 @@ def main(_run, _config, _log):
         'test_label': _config['test_label'],
         'exclude_label': _config['exclude_label'],
         'use_gt': _config['use_gt'],
+        'fold_protocol': _config['fold_protocol'],
+        'image_size': _config['image_size'],
     }
     train_dataset = TrainDataset(data_config)
     train_loader = DataLoader(
@@ -225,7 +242,7 @@ def main(_run, _config, _log):
         drop_last=True
     )
 
-    n_sub_epochs = _config['n_steps'] // _config['max_iters_per_load']
+    n_sub_epochs = math.ceil(_config['n_steps'] / _config['max_iters_per_load'])
     log_loss = {
         'total_loss': 0.0,
         'ce_loss': 0.0,
@@ -243,18 +260,11 @@ def main(_run, _config, _log):
             model.set_epoch(sub_epoch)
 
         for _, sample in enumerate(train_loader):
-            if sample['support_images'].shape[-1] == 257:
-                for key in ['support_images', 'support_fg_labels', 'query_images', 'query_labels']:
-                    tensor = sample[key]
-                    ndim = tensor.ndim
-                    slices = (slice(None),) * (ndim - 2) + (slice(0, 256), slice(0, 256))
-                    sample[key] = tensor[slices]
-
-            support_images = [[shot.float().cuda(non_blocking=True) for shot in way] for way in sample['support_images']]
-            support_fg_mask = [[shot.float().cuda(non_blocking=True) for shot in way] for way in sample['support_fg_labels']]
-            query_images = [query_image.float().cuda(non_blocking=True) for query_image in sample['query_images']]
+            support_images = [[shot.float().to(device, non_blocking=True) for shot in way] for way in sample['support_images']]
+            support_fg_mask = [[shot.float().to(device, non_blocking=True) for shot in way] for way in sample['support_fg_labels']]
+            query_images = [query_image.float().to(device, non_blocking=True) for query_image in sample['query_images']]
             query_labels = torch.cat(
-                [query_label.long().cuda(non_blocking=True) for query_label in sample['query_labels']], dim=0
+                [query_label.long().to(device, non_blocking=True) for query_label in sample['query_labels']], dim=0
             )
 
             query_images_aug = [_strong_augment_intensity(query_images[0])]
@@ -315,6 +325,9 @@ def main(_run, _config, _log):
                 )
 
             i_iter += 1
+            if i_iter % int(_config['save_snapshot_every']) == 0 and _run.observers:
+                torch.save(model.state_dict(), os.path.join(
+                    _run.observers[0].dir, 'snapshots', f'{i_iter}.pth'))
 
             if i_iter >= int(_config['n_steps']):
                 break
@@ -322,8 +335,6 @@ def main(_run, _config, _log):
             break
 
     _log.info('End of training.')
-    torch.save(
-        model.state_dict(),
-        os.path.join(f'{_run.observers[0].dir}/snapshots', f'final.pth')
-    )
+    if _run.observers:
+        torch.save(model.state_dict(), os.path.join(_run.observers[0].dir, 'snapshots', 'final.pth'))
     return 1
