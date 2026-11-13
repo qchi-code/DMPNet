@@ -52,6 +52,7 @@ scipy==1.16.0
 1. Compile `./data/supervoxels/felzenszwalb_3d_cy.pyx` with cython (`python ./data/supervoxels/setup.py build_ext --inplace`) and run `./data/supervoxels/generate_supervoxels.py`
 2. Download pre-trained ResNet-101 weights and put your checkpoints folder, then replace the absolute path in the code `./models/encoder.py`.  
 3. Run `./scripts/train_<direction>.sh`, for example: `./scripts/train_CHAOST2_setting1.sh`
+4. The trained model weights are available at the following link for download and evaluation: [Google Drive](https://drive.google.com/file/d/1qnlC9Z158WsUY47YTZiAwiJr8QseHXJt/view?usp=drive_link). Please note that you need to manually download and extract the files.
 
 
 ## 🌹Acknowledgements
