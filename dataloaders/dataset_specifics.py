@@ -40,7 +40,15 @@ def get_label_names(dataset):
     return label_names
 
 
-def get_folds(dataset):
+def get_folds(dataset, protocol="legacy"):
+    if protocol == 'disjoint':
+        n = {'CHAOST2': 20, 'SABS': 30, 'CMR': 35}.get(dataset)
+        if n is None:
+            raise ValueError(f'Unknown dataset {dataset}')
+        import numpy as np
+        return {i: set(part.tolist()) for i, part in enumerate(np.array_split(np.arange(n), 5))}
+    if protocol != 'legacy':
+        raise ValueError(f'Unknown fold protocol: {protocol}')
     FOLD = {}
     if dataset == 'CMR':
         FOLD[0] = set(range(0, 8))
